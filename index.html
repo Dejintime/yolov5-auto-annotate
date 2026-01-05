@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>YOLOv5 实训平台</title>
+    <!-- 引入样式和库 (国内镜像源) -->
+    <link rel="stylesheet" href="https://cdn.staticfile.org/element-plus/2.3.14/index.min.css" />
+    <script src="https://cdn.staticfile.org/vue/3.3.4/vue.global.min.js"></script>
+    <script src="https://cdn.staticfile.org/element-plus/2.3.14/index.full.min.js"></script>
+    <script src="https://cdn.staticfile.org/axios/1.6.0/axios.min.js"></script>
+    <script src="https://cdn.staticfile.org/fabric.js/5.3.0/fabric.min.js"></script>
+    <style>
+        body { margin: 0; padding: 20px; font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", Arial, sans-serif; background: #f5f7fa; }
+        .main-card { min-height: 80vh; }
+        .container { display: flex; gap: 20px; height: 70vh; }
+        .sidebar { width: 300px; display: flex; flex-direction: column; gap: 15px; }
+        .canvas-area { flex: 1; background: #eee; border-radius: 4px; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 1px solid #ddd; }
+        .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 4px; font-family: monospace; height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <el-card class="main-card">
+            <template #header>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 style="margin:0">🚀 YOLOv5 自动图像目标检测与标注系统</h2>
+                    <el-tag type="info">实训项目 v1.0</el-tag>
+                </div>
+            </template>
+
+            <el-tabs v-model="activeTab">
+                
+                <!-- ================= 标签页 1: 智能标注 ================= -->
+                <el-tab-pane label="🖼️ 智能标注 & 数据准备" name="annotation">
+                    <div class="container">
+                        <!-- 左侧操作栏 -->
+                        <div class="sidebar">
+                            <el-card shadow="never">
+                                <template #header><b>1. 图像上传</b></template>
+                                <el-upload
+                                    action="#"
+                                    :auto-upload="false"
+                                    :on-change="handleFileChange"
+                                    :show-file-list="false">
+                                    <el-button type="primary" style="width: 100%;">选择图片并检测</el-button>
+                                </el-upload>
+                                <div v-if="currentFile" style="margin-top: 10px; font-size: 12px; color: #666;">
+                                    当前: {{ currentFile.name }}
+                                </div>
+                            </el-card>
+
+                            <el-card shadow="never" v-if="activeObject">
+                                <template #header><b>2. 修正标注</b></template>
+                                <el-form label-position="top" size="small">
+                                    <el-form-item label="类别名称">
+                                        <el-input v-model="activeObject.label" @input="updateLabel"></el-input>
+                                    </el-form-item>
+                                    <el-button type="danger" plain style="width: 100%;" @click="deleteActiveObject">删除此框 (Del)</el-button>
+                                </el-form>
+                            </el-card>
+                            <el-alert v-else title="点击画布上的框进行修改" type="info" :closable="false"></el-alert>
+
+                            <div style="margin-top: auto;">
+                                <el-button type="success" size="large" style="width: 100%;" @click="saveAnnotations" :loading="saving">
+                                    3. 保存结果 (XML+图)
+                                </el-button>
+                            </div>
+                        </div>
+
+                        <!-- 右侧画布 -->
+                        <div class="canvas-area" id="canvas-wrapper">
+                            <canvas id="c"></canvas>
+                        </div>
+                    </div>
+                </el-tab-pane>
+
+                <!-- ================= 标签页 2: 模型训练 ================= -->
+                <el-tab-pane label="🔥 模型训练 & 评估" name="training">
+                    <el-row :gutter="20">
+                        <!-- 训练配置 -->
+                        <el-col :span="8">
+                            <el-card header="训练参数配置">
+                                <el-form label-width="100px">
+                                    <el-form-item label="Epochs">
+                                        <el-input-number v-model="trainConfig.epochs" :min="1" :max="300"></el-input-number>
+                                    </el-form-item>
+                                    <el-form-item label="Batch Size">
+                                        <el-select v-model="trainConfig.batch_size">
+                                            <el-option :value="4" label="4 (低显存)"></el-option>
+                                            <el-option :value="8" label="8"></el-option>
+                                            <el-option :value="16" label="16 (推荐)"></el-option>
+                                            <el-option :value="32" label="32"></el-option>
+                                        </el-select>
+                                    </el-form-item>
+                                    <el-form-item label="预训练权重">
+                                        <el-input v-model="trainConfig.weights" disabled></el-input>
+                                    </el-form-item>
+                                    
+                                    <el-divider></el-divider>
+                                    
+                                    <el-button 
+                                        type="danger" 
+                                        style="width: 100%;" 
+                                        @click="startTraining" 
+                                        :loading="trainStatus.is_training"
+                                        :disabled="trainStatus.is_training">
+                                        {{ trainStatus.is_training ? '训练进行中...' : '开始训练 (Start Training)' }}
+                                    </el-button>
+                                </el-form>
+                            </el-card>
+
+                            <el-card header="模型评估" style="margin-top: 20px;">
+                                <p style="font-size: 12px; color: #666;">使用验证集评估当前最佳模型 (best.pt)</p>
+                                <el-button type="primary" plain style="width: 100%;" @click="startEvaluation" :loading="evaluating">
+                                    运行评估 (Val)
+                                </el-button>
+                            </el-card>
+                        </el-col>
+
+                        <!-- 日志输出与结果展示 -->
+                        <el-col :span="16">
+                            <!-- 新增：评估指标仪表盘 -->
+                            <div v-if="evalMetrics" style="margin-bottom: 20px;">
+                                <el-row :gutter="10">
+                                    <el-col :span="6">
+                                        <el-card shadow="hover" style="text-align: center; background: #f0f9eb;">
+                                            <div style="font-size: 12px; color: #666;">精确率 (P)</div>
+                                            <div style="font-size: 24px; font-weight: bold; color: #67c23a;">{{ evalMetrics.precision }}</div>
+                                        </el-card>
+                                    </el-col>
+                                    <el-col :span="6">
+                                        <el-card shadow="hover" style="text-align: center; background: #e1f3d8;">
+                                            <div style="font-size: 12px; color: #666;">召回率 (R)</div>
+                                            <div style="font-size: 24px; font-weight: bold; color: #409eff;">{{ evalMetrics.recall }}</div>
+                                        </el-card>
+                                    </el-col>
+                                    <el-col :span="6">
+                                        <el-card shadow="hover" style="text-align: center; background: #fdf6ec;">
+                                            <div style="font-size: 12px; color: #666;">mAP@0.5</div>
+                                            <div style="font-size: 24px; font-weight: bold; color: #e6a23c;">{{ evalMetrics.map50 }}</div>
+                                        </el-card>
+                                    </el-col>
+                                    <el-col :span="6">
+                                        <el-card shadow="hover" style="text-align: center; background: #fef0f0;">
+                                            <div style="font-size: 12px; color: #666;">mAP@0.5:0.95</div>
+                                            <div style="font-size: 24px; font-weight: bold; color: #f56c6c;">{{ evalMetrics.map95 }}</div>
+                                        </el-card>
+                                    </el-col>
+                                </el-row>
+                            </div>
+
+                            <el-card header="系统日志 / 终端输出">
+                                <div class="log-box">
+                                    <div v-if="trainStatus.is_training">
+                                        > 状态: 正在训练中...<br>
+                                        > 消息: {{ trainStatus.message }}<br>
+                                        > <span class="blink">_</span>
+                                    </div>
+                                    <div v-else>
+                                        > 状态: {{ trainStatus.message }}
+                                    </div>
+                                    <el-divider border-style="dashed" content-position="left">详细日志</el-divider>
+                                    <div v-if="evalOutput">{{ evalOutput }}</div>
+                                </div>
+                            </el-card>
+                        </el-col>
+                    </el-row>
+                </el-tab-pane>
+
+            </el-tabs>
+        </el-card>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, onUnmounted } = Vue;
+
+        const app = createApp({
+            setup() {
+                // --- 通用状态 ---
+                const activeTab = ref('annotation');
+
+                // --- 标注功能状态 ---
+                const canvas = ref(null);
+                const currentFile = ref(null);
+                const activeObject = ref(null);
+                const saving = ref(false);
+                const imageScale = ref(1);
+
+                // --- 训练功能状态 ---
+                const trainConfig = ref({
+                    epochs: 50,
+                    batch_size: 16,
+                    weights: 'yolov5s.pt'
+                });
+                const trainStatus = ref({ is_training: false, message: 'Idle' });
+                const evaluating = ref(false);
+                const evalOutput = ref('');
+                const evalMetrics = ref(null); // 新增：用于存储解析后的指标
+                let statusTimer = null;
+
+                // ================== 标注逻辑 ==================
+                onMounted(() => {
+                    // 初始化 Fabric
+                    canvas.value = new fabric.Canvas('c');
+                    canvas.value.on('selection:created', handleSelection);
+                    canvas.value.on('selection:updated', handleSelection);
+                    canvas.value.on('selection:cleared', () => activeObject.value = null);
+                    
+                    document.addEventListener('keydown', (e) => {
+                        if ((e.key === 'Delete' || e.key === 'Backspace') && activeTab.value === 'annotation') {
+                            deleteActiveObject();
+                        }
+                    });
+
+                    // 启动定时器轮询训练状态
+                    statusTimer = setInterval(checkTrainingStatus, 2000);
+                });
+
+                onUnmounted(() => {
+                    if (statusTimer) clearInterval(statusTimer);
+                });
+
+                const handleSelection = (e) => {
+                    const selected = e.selected[0];
+                    if (selected) {
+                        activeObject.value = {
+                            label: selected.label || 'unknown',
+                            ref: selected
+                        };
+                    }
+                };
+
+                const updateLabel = () => {
+                    if (activeObject.value?.ref) {
+                        activeObject.value.ref.set('label', activeObject.value.label);
+                        canvas.value.requestRenderAll();
+                    }
+                };
+
+                const deleteActiveObject = () => {
+                    const active = canvas.value.getActiveObject();
+                    if (active) {
+                        canvas.value.remove(active);
+                        activeObject.value = null;
+                    }
+                };
+
+                const handleFileChange = async (file) => {
+                    currentFile.value = file.raw;
+                    const reader = new FileReader();
+                    reader.onload = (f) => {
+                        fabric.Image.fromURL(f.target.result, (img) => {
+                            // 动态调整 Canvas 大小
+                            const wrapper = document.getElementById('canvas-wrapper');
+                            const maxWidth = wrapper.clientWidth - 40; 
+                            const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+                            imageScale.value = scale;
+
+                            img.set({ scaleX: scale, scaleY: scale, selectable: false });
+                            canvas.value.setWidth(img.width * scale);
+                            canvas.value.setHeight(img.height * scale);
+                            canvas.value.setBackgroundImage(img, canvas.value.renderAll.bind(canvas.value));
+                        });
+                    };
+                    reader.readAsDataURL(file.raw);
+
+                    // 调用后端预测
+                    const formData = new FormData();
+                    formData.append('file', file.raw);
+                    try {
+                        const res = await axios.post('http://127.0.0.1:8000/predict', formData);
+                        drawBoxes(res.data.detections);
+                        ElementPlus.ElMessage.success('检测完成');
+                    } catch (error) {
+                        ElementPlus.ElMessage.error('检测失败，请检查后端');
+                    }
+                };
+
+                const drawBoxes = (detections) => {
+                    canvas.value.getObjects().forEach(o => canvas.value.remove(o));
+                    detections.forEach(det => {
+                        const scale = imageScale.value;
+                        const rect = new fabric.Rect({
+                            left: det.xmin * scale,
+                            top: det.ymin * scale,
+                            width: (det.xmax - det.xmin) * scale,
+                            height: (det.ymax - det.ymin) * scale,
+                            fill: 'rgba(255,0,0,0.1)',
+                            stroke: 'red',
+                            strokeWidth: 2,
+                            hasControls: true,
+                            hasBorders: true,
+                            lockRotation: true,
+                            uniformScaling: false, // 允许自由拉伸
+                            transparentCorners: false,
+                            cornerColor: 'blue',
+                            cornerSize: 10,
+                            label: det.name
+                        });
+                        canvas.value.add(rect);
+                    });
+                    canvas.value.requestRenderAll();
+                };
+
+                const saveAnnotations = async () => {
+                    if (!currentFile.value) return;
+                    saving.value = true;
+                    
+                    const boxes = [];
+                    const scale = imageScale.value;
+                    
+                    canvas.value.getObjects().forEach(obj => {
+                        if (obj.type === 'rect') {
+                            boxes.push({
+                                xmin: obj.left / scale,
+                                ymin: obj.top / scale,
+                                xmax: (obj.left + obj.getScaledWidth()) / scale,
+                                ymax: (obj.top + obj.getScaledHeight()) / scale,
+                                label: obj.label || 'unknown'
+                            });
+                        }
+                    });
+
+                    try {
+                        const res = await axios.post('http://127.0.0.1:8000/save_annotation', {
+                            filename: currentFile.value.name,
+                            width: Math.round(canvas.value.width / scale),
+                            height: Math.round(canvas.value.height / scale),
+                            boxes: boxes,
+                            save_image: true
+                        });
+                        ElementPlus.ElMessage.success(`保存成功: ${res.data.xml_path}`);
+                    } catch (error) {
+                        ElementPlus.ElMessage.error('保存失败');
+                    } finally {
+                        saving.value = false;
+                    }
+                };
+
+                // ================== 训练逻辑 ==================
+                
+                const startTraining = async () => {
+                    try {
+                        const res = await axios.post('http://127.0.0.1:8000/train', trainConfig.value);
+                        if (res.data.status === 'success') {
+                            ElementPlus.ElMessage.success('训练任务已在后台启动');
+                            trainStatus.value.is_training = true;
+                        } else {
+                            ElementPlus.ElMessage.warning(res.data.message);
+                        }
+                    } catch (error) {
+                        ElementPlus.ElMessage.error('启动训练失败');
+                    }
+                };
+
+                const checkTrainingStatus = async () => {
+                    try {
+                        const res = await axios.get('http://127.0.0.1:8000/train/status');
+                        trainStatus.value = res.data;
+                    } catch (error) {
+                        console.log('Status check failed');
+                    }
+                };
+
+                const startEvaluation = async () => {
+                    evaluating.value = true;
+                    evalOutput.value = '正在评估中，请稍候...';
+                    evalMetrics.value = null; // 清空旧数据
+                    
+                    try {
+                        const res = await axios.post('http://127.0.0.1:8000/evaluate', {
+                            weights: 'runs/train/custom_exp/weights/best.pt',
+                            data_yaml: 'coco128.yaml'
+                        });
+                        if (res.data.status === 'success') {
+                            evalOutput.value = res.data.output;
+                            // 新增：保存指标数据
+                            if (res.data.metrics) {
+                                evalMetrics.value = res.data.metrics;
+                            }
+                            ElementPlus.ElMessage.success('评估完成');
+                        } else {
+                            evalOutput.value = `Error: ${res.data.message}\n${res.data.error}`;
+                        }
+                    } catch (error) {
+                        evalOutput.value = '请求失败';
+                    } finally {
+                        evaluating.value = false;
+                    }
+                };
+
+                return {
+                    activeTab,
+                    // 标注
+                    currentFile, activeObject, saving,
+                    handleFileChange, updateLabel, deleteActiveObject, saveAnnotations,
+                    // 训练
+                    trainConfig, trainStatus, evaluating, evalOutput, evalMetrics, // 记得导出 evalMetrics
+                    startTraining, startEvaluation
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        app.mount('#app');
+    </script>
+</body>
+</html>
